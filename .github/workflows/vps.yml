@@ -1,4 +1,4 @@
-name: "Exit Node (6h + ngrok static)"
+name: "vps"
 
 on:
   workflow_dispatch:
