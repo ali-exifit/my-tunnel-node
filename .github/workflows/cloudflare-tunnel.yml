@@ -33,10 +33,9 @@ jobs:
 
       - name: Keep alive for 6 hours
         run: |
-          echo "=================================================="
-          echo " Exit node running at: https://exit.yourdomain.com"
+          echo "running perfectly!"
           echo "=================================================="
           while true; do
             sleep 3600
-            echo "[$(date)] Still alive → https://exit.yourdomain.com"
+            echo "[$(date)] Still alive!"
           done
