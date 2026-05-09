@@ -1,4 +1,4 @@
-name: "cloudflared"
+name: "vps-cloudflared"
 
 on:
   workflow_dispatch:
