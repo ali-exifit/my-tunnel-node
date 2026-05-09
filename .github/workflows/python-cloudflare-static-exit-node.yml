@@ -1,4 +1,4 @@
-name: "cloudflare-static-exit-node"
+name: "python-cloudflare-static-exit-node"
 
 on:
   workflow_dispatch:
