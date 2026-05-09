@@ -1,0 +1,44 @@
+name: "Exit Node (6h + ngrok static)"
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ngrok
+        run: |
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+          echo "deb https://ngrok-agent.s3.amazonaws.com buster main" \
+            | sudo tee /etc/apt/sources.list.d/ngrok.list
+          sudo apt-get update && sudo apt-get install ngrok
+
+      - name: Authenticate ngrok
+        run: ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
+
+      - name: Start exit node in background
+        env:
+          EXIT_NODE_PSK: ${{ secrets.EXIT_NODE_PSK }}
+        run: |
+          python3 vps_exit_node.py --host 127.0.0.1 --port 8181 &
+          sleep 2
+
+      - name: Expose via ngrok with stable domain
+        run: |
+          ngrok http 8181 --domain=${{ secrets.NGROK_DOMAIN }} --log=stdout &
+          sleep 5
+          echo "--------------------------------------------------"
+          echo "🌐 Exit node is permanently live at:"
+          echo "   https://${{ secrets.NGROK_DOMAIN }}"
+          echo "--------------------------------------------------"
+
+      - name: Keep alive for 6 hours
+        run: tail -f /dev/null
