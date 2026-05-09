@@ -31,7 +31,7 @@ jobs:
           sleep 10
           echo "🌐 Tunnel established – exit.yourdomain.com is now live."
 
-      - name: Keep alive for 6 hours
+      - name: running
         run: |
           echo "running perfectly!"
           echo "=================================================="
