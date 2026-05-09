@@ -1,4 +1,4 @@
-name: "python-actions-ngrok-exit-node"
+name: "python-tunnel-ngrok-exit-node"
 
 on:
   workflow_dispatch:
