@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""
-rust-exit-node.py — Python re‑implementation of MHR-CFW Exit Worker
-(Cloudflare Workers companion to Code.cfw.gs).
-
-This script acts as a relay between Apps Script and the destination
-server, handling both single and batch HTTP requests. It faithfully
-replicates the logic of the Cloudflare Worker, including:
-
-- Auth via PSK (from EXIT_NODE_PSK environment or --psk argument)
-- Single request: POST { k, u, m, h, b, ct, r }
-- Batch request:  POST { k, q: [ {u, m, h, b, ct, r}, ... ] }
-- Loop protection via x-relay-hop header and self‑host check
-- Hop‑by‑hop header stripping
-- Base64 request/response body conversion
-- Redirect handling (r=false → no follow)
-- Body‑prohibited method safety (GET/HEAD drop body)
-- Parallel batch processing (ThreadPoolExecutor)
-
-Result shape matches the Worker exactly:
-  Success: { s: status, h: {...}, b: base64_body }
-  Error:   { e: "..." }
-"""
-
 import argparse
 import base64
 import concurrent.futures
