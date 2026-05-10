@@ -16,14 +16,14 @@ jobs:
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
 
-      - name: Start exit node
+      - name: Start Node
         env:
           EXIT_NODE_PSK: ${{ secrets.EXIT_NODE_PSK }}
         run: |
           python3 .github/script/python_exit_node.py --host 127.0.0.1 --port 8181 &
           sleep 2
 
-      - name: Connect to Cloudflare Tunnel (static domain)
+      - name: Connect to Cloudflare
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
@@ -31,7 +31,7 @@ jobs:
           sleep 10
           echo "🌐 Tunnel established – exit.yourdomain.com is now live."
 
-      - name: running
+      - name: Run
         run: |
           echo "running perfectly!"
           echo "=================================================="
