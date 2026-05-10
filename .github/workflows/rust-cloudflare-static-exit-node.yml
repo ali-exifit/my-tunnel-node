@@ -3,48 +3,38 @@ name: "rust-cloudflare-static-exit-node"
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
-  tunnel:
+  relay:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 360   # maximum 6 hours
 
     steps:
-      - name: Start Node
-        run: |
-          docker run -d --name mhrv-tunnel \
-            -p 8080:8080 \
-            -e TUNNEL_AUTH_KEY="${{ secrets.TUNNEL_AUTH_KEY }}" \
-            ghcr.io/therealaleph/mhrv-tunnel-node:latest
-          sleep 5
-          for i in {1..5}; do
-            if curl -s http://localhost:8080/health; then
-              echo "Tunnel node healthy"
-              break
-            fi
-            sleep 3
-          done
+      - uses: actions/checkout@v4
 
       - name: Download cloudflared
         run: |
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
 
-      - name: Run
+      - name: Start Node
+        env:
+          EXIT_NODE_PSK: ${{ secrets.EXIT_NODE_PSK }}
+        run: |
+          python3 .github/script/rust-exit-node.py --host 127.0.0.1 --port 8181 &
+          sleep 2   # give it a moment to bind
+
+      - name: Connect to Cloudflare
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
         run: |
           ./cloudflared tunnel run --token "$CF_TUNNEL_TOKEN" > /tmp/tunnel.log 2>&1 &
           sleep 10
+          echo "🌐 Tunnel established – exit node is now live."
+
+      - name: Run
+        run: |
+          echo "========================="
           while true; do
             sleep 3600
-            echo "[$(date -u)] running!"
+            echo "[$(date)] running!"
           done
-
-      - name: Cleanup
-        if: always()
-        run: |
-          docker stop mhrv-tunnel || true
-          pkill cloudflared || true
