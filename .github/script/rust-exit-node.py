@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
+"""
+rust-exit-node.py — Python re‑implementation of MHR-CFW Exit Worker.
+Now with proper response decompression (gzip, deflate, brotli).
+"""
+
 import argparse
 import base64
 import concurrent.futures
+import gzip
 import http.server
 import json
 import logging
@@ -11,6 +17,7 @@ import socketserver
 import sys
 import urllib.error
 import urllib.request
+import zlib
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -41,12 +48,25 @@ STRIP_REQUEST_HEADERS = frozenset(
         "proxy-authorization",
         "priority",
         "te",
+        # Prevent compression so we don't have to decompress (still handled
+        # below as defence‑in‑depth).
+        "accept-encoding",
     )
 )
 
 MAX_BATCH_SIZE = 40          # must match WORKER_BATCH_CHUNK in Code.cfw.gs
 OUTBOUND_TIMEOUT = 30        # seconds per fetch
 MAX_RESPONSE_BODY = 64 * 1024 * 1024   # 64 MiB
+
+# ---------------------------------------------------------------------------
+# Optional brotli support (install with: pip install brotli)
+# ---------------------------------------------------------------------------
+try:
+    import brotli
+    HAS_BROTLI = True
+except ImportError:
+    HAS_BROTLI = False
+    log.info("brotli not installed – brotli responses will not be decompressed")
 
 # ---------------------------------------------------------------------------
 # Global PSK
@@ -57,14 +77,12 @@ PSK = ""
 # Outbound HTTP client
 # ---------------------------------------------------------------------------
 def _build_no_redirect_opener():
-    """Return an opener that does NOT follow redirects."""
     opener = urllib.request.OpenerDirector()
     opener.add_handler(urllib.request.UnknownHandler())
     opener.add_handler(urllib.request.HTTPDefaultErrorHandler())
     opener.add_handler(urllib.request.HTTPErrorProcessor())
     opener.add_handler(urllib.request.HTTPHandler())
     opener.add_handler(urllib.request.HTTPSHandler())
-    # The default HTTPRedirectHandler follows redirects; we omit it.
     return opener
 
 _no_redirect_opener = _build_no_redirect_opener()
@@ -84,6 +102,31 @@ def _clean_headers(raw):
     return clean
 
 
+def _decompress_body(data: bytes, content_encoding: str) -> bytes:
+    """
+    Decompress the response body according to the Content-Encoding header.
+    Returns the decompressed bytes, or the original data if unsupported.
+    """
+    enc = content_encoding.lower().strip()
+    if not enc or enc == "identity":
+        return data
+    try:
+        if enc in ("gzip", "x-gzip"):
+            return gzip.decompress(data)
+        if enc == "deflate":
+            # Try raw deflate first, then zlib-wrapped.
+            try:
+                return zlib.decompress(data, -zlib.MAX_WBITS)
+            except zlib.error:
+                return zlib.decompress(data)
+        if enc == "br" and HAS_BROTLI:
+            return brotli.decompress(data)
+    except Exception as e:
+        log.warning("Decompression failed for %s: %s", enc, e)
+    # Fallback: return compressed data unchanged (client may handle it)
+    return data
+
+
 def _fetch_with_redirect_policy(method: str, url: str, headers: dict,
                                 body: bytes | None, follow_redirects: bool):
     """Perform the outbound request, returning (status, resp_headers, bytes)."""
@@ -92,67 +135,71 @@ def _fetch_with_redirect_policy(method: str, url: str, headers: dict,
 
     try:
         with opener.open(req, timeout=OUTBOUND_TIMEOUT) as resp:
-            data = resp.read(MAX_RESPONSE_BODY)
-            # Collect response headers, preserving duplicates as lists
-            resp_headers = {}
+            raw_data = resp.read(MAX_RESPONSE_BODY)
+            # Save original headers before stripping
+            raw_headers = dict(resp.headers)
+            content_encoding = raw_headers.get("Content-Encoding", "")
+            # Decompress the body
+            decoded_data = _decompress_body(raw_data, content_encoding)
+            # Build final response headers, stripping content‑encoding & content‑length
+            clean_headers = {}
             key_map = {}
-            for k, v in resp.headers.items():
+            for k, v in raw_headers.items():
                 kl = k.lower()
+                if kl in ("content-encoding", "content-length"):
+                    continue
                 if kl not in key_map:
                     key_map[kl] = k
-                    resp_headers[k] = v
+                    clean_headers[k] = v
                 else:
-                    existing = resp_headers[key_map[kl]]
+                    existing = clean_headers[key_map[kl]]
                     if isinstance(existing, list):
                         existing.append(v)
                     else:
-                        resp_headers[key_map[kl]] = [existing, v]
-            return resp.status, resp_headers, data
+                        clean_headers[key_map[kl]] = [existing, v]
+            return resp.status, clean_headers, decoded_data
     except urllib.error.HTTPError as exc:
-        data = exc.read(MAX_RESPONSE_BODY) if exc.fp else b""
-        headers = {}
-        if exc.headers:
-            for k, v in exc.headers.items():
-                headers[k] = v
-        return exc.code, headers, data
+        raw_data = exc.read(MAX_RESPONSE_BODY) if exc.fp else b""
+        raw_headers = dict(exc.headers) if exc.headers else {}
+        content_encoding = raw_headers.get("Content-Encoding", "")
+        decoded_data = _decompress_body(raw_data, content_encoding)
+        clean_headers = {}
+        for k, v in raw_headers.items():
+            kl = k.lower()
+            if kl in ("content-encoding", "content-length"):
+                continue
+            clean_headers[k] = v
+        return exc.code, clean_headers, decoded_data
 
 
 def _process_one(item: dict, self_host: str) -> dict:
     """Process a single item, mirroring the Worker's processOne()."""
-    # Validate item shape
     if not isinstance(item, dict):
         return {"e": "bad item"}
     u = item.get("u")
     if not u or not isinstance(u, str) or not re.match(r"^https?://", u, re.IGNORECASE):
         return {"e": "bad url"}
 
-    # Parse target URL
     try:
         target_url = urllib.request.urlparse(u)
         target_host = target_url.hostname or ""
     except Exception:
         return {"e": "bad url"}
 
-    # Self‑fetch prevention (loop guard)
     if target_host.lower() == self_host.lower():
         return {"e": "self-fetch blocked"}
 
-    # Build request headers: start with sanitised incoming headers
     headers = {}
     if "h" in item and isinstance(item["h"], dict):
         for k, v in item["h"].items():
             if k.lower() in STRIP_REQUEST_HEADERS:
                 continue
             headers[k] = str(v)
-    # Mark with relay‑hop header to prevent downstream loops
     headers[HEADER_RELAY_HOP] = "1"
 
     method = str(item.get("m", "GET")).upper()
+    follow_redirects = item.get("r") is not False
 
-    # Redirect policy
-    follow_redirects = item.get("r") is not False   # default True
-
-    # Body handling (body‑prohibited methods silently drop body)
     body_bytes = None
     if method not in ("GET", "HEAD"):
         b64 = item.get("b")
@@ -161,13 +208,11 @@ def _process_one(item: dict, self_host: str) -> dict:
                 body_bytes = base64.b64decode(b64)
             except Exception:
                 return {"e": "bad body base64"}
-            # Content‑type injection
             if "ct" in item and item["ct"] and "content-type" not in {
                     k.lower() for k in headers
             }:
                 headers["content-type"] = str(item["ct"])
 
-    # Perform the outbound request
     try:
         status, resp_headers, data = _fetch_with_redirect_policy(
             method, u, headers, body_bytes, follow_redirects
@@ -175,8 +220,6 @@ def _process_one(item: dict, self_host: str) -> dict:
     except Exception as err:
         return {"e": "fetch failed: " + str(err)}
 
-    # Convert response body to base64 (chunked to avoid call‑stack issues with
-    # large payloads – Python handles it fine, but we mirror the Worker's logic).
     b64_body = base64.b64encode(data).decode("ascii")
 
     return {
@@ -188,16 +231,10 @@ def _process_one(item: dict, self_host: str) -> dict:
 
 def _process_batch(items: list, self_host: str) -> list:
     """Process a list of items in parallel."""
-    if len(items) > MAX_BATCH_SIZE:
-        # The Worker returns a top‑level error for oversized batches.
-        # We'll simulate that by raising an exception that the handler
-        # turns into a 400 response.
-        raise ValueError(
-            f"batch too large ({len(items)} > {MAX_BATCH_SIZE})"
-        )
-
     if not items:
         return []
+    if len(items) > MAX_BATCH_SIZE:
+        raise ValueError(f"batch too large ({len(items)} > {MAX_BATCH_SIZE})")
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = [executor.submit(_process_one, item, self_host) for item in items]
@@ -217,7 +254,7 @@ class ExitWorkerHandler(http.server.BaseHTTPRequestHandler):
     """Handles POST relay requests; GET returns health status."""
 
     def log_message(self, fmt, *args):
-        pass  # use our own logger
+        pass
 
     def _send_json(self, status: int, obj: dict):
         body = json.dumps(obj).encode("utf-8")
@@ -239,17 +276,14 @@ class ExitWorkerHandler(http.server.BaseHTTPRequestHandler):
         )
 
     def do_POST(self):
-        # Enforce POST only
         if self.command != "POST":
             self._send_json(405, {"e": "method not allowed"})
             return
 
-        # Loop detection via relay‑hop header (sent by this same server)
         if self.headers.get(HEADER_RELAY_HOP) == "1":
             self._send_json(508, {"e": "loop detected"})
             return
 
-        # Read the request body
         content_length = int(self.headers.get("Content-Length", 0))
         if content_length <= 0:
             self._send_json(400, {"e": "empty body"})
@@ -261,17 +295,14 @@ class ExitWorkerHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(400, {"e": "bad json"})
             return
 
-        # Auth check
         if not isinstance(body, dict) or body.get("k") != PSK:
             log.warning("Unauthorized request from %s", self.client_address[0])
             self._send_json(401, {"e": "unauthorized"})
             return
 
-        # Determine our own hostname from the Host header
         host_header = self.headers.get("Host", "")
-        self_host = host_header.split(":")[0]   # strip port
+        self_host = host_header.split(":")[0]
 
-        # Batch mode
         if "q" in body and isinstance(body.get("q"), list):
             batch = body["q"]
             if len(batch) > MAX_BATCH_SIZE:
@@ -284,7 +315,6 @@ class ExitWorkerHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, {"q": results})
             return
 
-        # Single mode
         result = _process_one(body, self_host)
         if "e" in result:
             self._send_json(400, result)
@@ -301,23 +331,14 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Main
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="mhrv-rs exit Worker relay (Python)")
     parser.add_argument("--host", default="0.0.0.0", help="Listen interface (default 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8181, help="Listen port (default 8181)")
-    parser.add_argument(
-        "--psk",
-        default="",
-        help="Pre‑shared key (or set EXIT_NODE_PSK env var)",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Log verbosity",
-    )
+    parser.add_argument("--psk", default="", help="Pre‑shared key (or set EXIT_NODE_PSK env var)")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 
     logging.getLogger().setLevel(args.log_level)
@@ -328,10 +349,7 @@ def main():
         log.error("No PSK configured. Use --psk or EXIT_NODE_PSK env var.")
         sys.exit(1)
     if PSK == DEFAULT_PSK:
-        log.error(
-            "Placeholder PSK detected. Set a strong secret before running "
-            "the exit worker."
-        )
+        log.error("Placeholder PSK detected. Set a strong secret before running.")
         sys.exit(1)
 
     server = ThreadedHTTPServer((args.host, args.port), ExitWorkerHandler)
