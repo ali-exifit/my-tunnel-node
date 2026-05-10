@@ -16,7 +16,7 @@ jobs:
           curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
 
-      - name: Start exit node in background
+      - name: Start Node
         env:
           EXIT_NODE_PSK: ${{ secrets.EXIT_NODE_PSK }}
         run: |
@@ -35,7 +35,7 @@ jobs:
           echo '  "url": "'"$PUBLIC_URL"'",'
           echo "--------------------------------------------------"
 
-      - name: running
+      - name: Run
         run: |
           PUBLIC_URL=$(cat /tmp/public_url.txt)
           echo "=================================================="
