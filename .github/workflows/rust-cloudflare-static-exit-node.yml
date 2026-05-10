@@ -33,7 +33,7 @@ jobs:
 
       - name: running
         run: |
-          echo "=================================================="
+          echo "===================="
           echo "running!"
           while true; do
             sleep 3600
