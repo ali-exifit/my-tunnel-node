@@ -292,7 +292,7 @@ def main() -> None:
         "--psk",
         default="",
         metavar="SECRET",
-        help="Pre-shared key for authentication (or set EXIT_NODE_PSK env var).",
+        help="Pre-shared key for authentication (or set TUNNEL_AUTH_KEY env var).",
     )
     parser.add_argument(
         "--host",
@@ -323,11 +323,11 @@ def main() -> None:
         sys.exit(1)
 
     global _PSK
-    _PSK = (args.psk or os.environ.get("EXIT_NODE_PSK", "")).strip()
+    _PSK = (args.psk or os.environ.get("TUNNEL_AUTH_KEY", "")).strip()
     if not _PSK:
         log.error(
             "No PSK configured. Pass --psk YOUR_SECRET or set the "
-            "EXIT_NODE_PSK environment variable."
+            "TUNNEL_AUTH_KEY environment variable."
         )
         sys.exit(1)
 
