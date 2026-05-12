@@ -18,7 +18,7 @@ jobs:
 
       - name: Start
         env:
-          EXIT_NODE_PSK: ${{ secrets.EXIT_NODE_PSK }}
+          TUNNEL_AUTH_KEY: ${{ secrets.TUNNEL_AUTH_KEY }}
         run: |
           python3 .github/script/python_exit_node.py --host 127.0.0.1 --port 8181 &
           sleep 2
