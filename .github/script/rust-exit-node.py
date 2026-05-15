@@ -337,16 +337,16 @@ def main():
     parser = argparse.ArgumentParser(description="mhrv-rs exit Worker relay (Python)")
     parser.add_argument("--host", default="0.0.0.0", help="Listen interface (default 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8181, help="Listen port (default 8181)")
-    parser.add_argument("--psk", default="", help="Pre‑shared key (or set EXIT_NODE_PSK env var)")
+    parser.add_argument("--psk", default="", help="Pre‑shared key (or set TUNNEL_AUTH_KEY env var)")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     args = parser.parse_args()
 
     logging.getLogger().setLevel(args.log_level)
 
     global PSK
-    PSK = (args.psk or os.environ.get("EXIT_NODE_PSK", "")).strip()
+    PSK = (args.psk or os.environ.get("TUNNEL_AUTH_KEY", "")).strip()
     if not PSK:
-        log.error("No PSK configured. Use --psk or EXIT_NODE_PSK env var.")
+        log.error("No PSK configured. Use --psk or TUNNEL_AUTH_KEY env var.")
         sys.exit(1)
     if PSK == DEFAULT_PSK:
         log.error("Placeholder PSK detected. Set a strong secret before running.")
